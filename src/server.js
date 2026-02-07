@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import express from "express";
+import rateLimit from "express-rate-limit";
 import httpProxy from "http-proxy";
 import * as tar from "tar";
 
@@ -235,7 +236,9 @@ function requireSetupAuth(req, res, next) {
   const decoded = Buffer.from(encoded, "base64").toString("utf8");
   const idx = decoded.indexOf(":");
   const password = idx >= 0 ? decoded.slice(idx + 1) : "";
-  if (password !== SETUP_PASSWORD) {
+  const pwBuf = Buffer.from(password);
+  const expectedBuf = Buffer.from(SETUP_PASSWORD);
+  if (pwBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(pwBuf, expectedBuf)) {
     res.set("WWW-Authenticate", 'Basic realm="OpenClaw Setup"');
     return res.status(401).send("Invalid password");
   }
@@ -248,6 +251,17 @@ app.use(express.json({ limit: "1mb" }));
 
 // Minimal health endpoint for Railway.
 app.get("/setup/healthz", (_req, res) => res.json({ ok: true }));
+
+// Global rate limiter for /setup routes (brute-force protection).
+const setupLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 15, // limit to 15 requests per window (global)
+  keyGenerator: () => "global", // single bucket for all clients
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: "Too many requests to /setup, please try again later.",
+});
+app.use("/setup", setupLimiter);
 
 app.get("/setup/app.js", requireSetupAuth, (_req, res) => {
   // Serve JS for /setup (kept external to avoid inline encoding/template issues)
